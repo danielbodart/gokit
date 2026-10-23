@@ -1,0 +1,41 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege for the built-in token: this only reads the code.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # mise.toml is the one place Go's version is pinned, for CI and for
+      # anyone working on this locally.
+      - uses: jdx/mise-action@v4
+
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          [ -z "$unformatted" ] || { echo "not gofmt'd: $unformatted"; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      # The hosted runner is a real Linux host with cgroup2, so sockdiag's
+      # kernel tests run here rather than skip.
+      - name: Test
+        run: go test ./...
+
+      # The applications ship for 32-bit ARM too, where an int is 32 bits and
+      # a kernel's cgroup ids hold a generation; vet catches what only breaks
+      # there, and 386 runs the tests on a 32-bit userland.
+      - name: 32-bit
+        run: |
+          for arch in arm arm64 386; do GOARCH=$arch go vet ./...; done
+          GOARCH=386 go test ./...
