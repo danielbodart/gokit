@@ -4,22 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
-# Least privilege for the built-in token: this only reads the code.
+# Least privilege for the built-in token: read-only by default, and widened
+# only on the job that tags a release.
 permissions:
   contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The root module, standard library only, and dbusx, a module of its own
-    # because it needs godbus: each is built, vetted and tested on its own.
-    strategy:
-      matrix:
-        module: [., dbusx]
-    defaults:
-      run:
-        working-directory: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v7
 
@@ -27,24 +21,72 @@ jobs:
       # anyone working on this locally.
       - uses: jdx/mise-action@v4
 
-      - name: Format
-        run: |
-          unformatted=$(gofmt -l .)
-          [ -z "$unformatted" ] || { echo "not gofmt'd: $unformatted"; exit 1; }
-
-      - name: Vet
-        run: go vet ./...
+      - name: Check
+        run: ./run check
 
       # The hosted runner is a real Linux host with cgroup2, so sockdiag's
       # kernel tests run here rather than skip. conntrack's need CAP_NET_ADMIN,
       # which the runner's user lacks, so they skip on EPERM.
       - name: Test
-        run: go test ./...
+        run: ./run test
 
-      # The applications ship for 32-bit ARM too, where an int is 32 bits and
-      # a kernel's cgroup ids hold a generation; vet catches what only breaks
-      # there, and 386 runs the tests on a 32-bit userland.
-      - name: 32-bit
+  # Every green build of main is a release: the root module tagged v<version>
+  # and dbusx tagged dbusx/v<version>, at the same commit, so an application
+  # takes both at the same version and nothing needs bumping by hand.
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      # The whole history, because the version's minor is the commit count;
+      # ./run refuses a shallow clone rather than tag a wrong version.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        run: echo "value=$(./run version)" >> "$GITHUB_OUTPUT"
+
+      # A re-run has the same run number and so the same version, so the tags
+      # may already be there: left alone if they name this commit, and the job
+      # fails if they name another, since a version means one commit.
+      - name: Tag
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          for arch in arm arm64 386; do GOARCH=$arch go vet ./...; done
-          GOARCH=386 go test ./...
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for tag in "v$VERSION" "dbusx/v$VERSION"; do
+            if existing=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+              [ "$existing" = "$GITHUB_SHA" ] || { echo "$tag already names $existing"; exit 1; }
+            else
+              git tag -a -m "$tag" "$tag" "$GITHUB_SHA"
+              git push origin "refs/tags/$tag"
+            fi
+          done
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          tag="v$VERSION"
+          gh release view "$tag" >/dev/null 2>&1 || {
+            git log -1 --format=%B "$GITHUB_SHA" > notes.md
+            gh release create "$tag" --verify-tag --title "$tag" --latest --notes-file notes.md
+          }
+
+      # Asking the module proxy for each version fetches it now. The proxy
+      # caches a "not found" for a while, so the first lookup must come after
+      # the tag exists, not from an application racing it.
+      - name: Warm the module proxy
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          for module in gokit gokit/dbusx; do
+            curl -fsS "https://proxy.golang.org/github.com/danielbodart/$module/@v/v$VERSION.info"
+            echo
+          done

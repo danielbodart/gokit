@@ -86,7 +86,8 @@ Unix socket - real enough for godbus - that answers, records and signals as a
 test says, and refuses calls past a limit as dbus-daemon does.
 
 dbusx is a module of its own, because it needs godbus, so that the rest stays
-dependency-free. It is fetched and tagged on its own, as `dbusx/vX.Y.Z`:
+dependency-free. It is fetched on its own, and tagged `dbusx/vX.Y.Z` at the
+same version as the root module:
 
 ```sh
 go get github.com/danielbodart/gokit/dbusx
@@ -108,9 +109,26 @@ go get github.com/danielbodart/gokit/dbusx
   which has no `/sys`, or a user without `CAP_NET_ADMIN`.
 
 ```sh
-mise exec -- go test ./...
-(cd dbusx && mise exec -- go test ./...)
+./run check   # gofmt, and vet on amd64, arm, arm64 and 386, in both modules
+./run test    # the tests in both modules, natively and on 386
 ```
+
+## Versions
+
+Every green build of `main` is a release, tagged by CI: `vMAJOR.MINOR.PATCH`
+for the root module and `dbusx/vMAJOR.MINOR.PATCH` for dbusx, both at the
+same commit, so nothing is bumped by hand. It is the scheme Portical,
+Tidewaiter and Treesinger use:
+
+- **MAJOR** is the one number committed, in `MAJOR`, because moving it is a
+  decision: it says compatibility broke. Past 1, Go also wants the module path
+  to end in `/vN`.
+- **MINOR** is the commit count, so it only goes up and names one commit.
+- **PATCH** is the CI run number, which tells a re-run from the first build.
+
+`./run version` prints it; locally the patch is a timestamp instead. CI then
+asks the module proxy for each new tag, so the proxy has it before any
+application looks.
 
 ## License
 

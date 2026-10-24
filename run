@@ -1,0 +1,71 @@
+#!/bin/sh
+# The one place gokit's build is defined, so CI runs the same commands a
+# developer does: ./run <version|check|test>.
+set -eu
+
+cd "$(dirname "$0")"
+
+# The root module, standard library only, and dbusx, a module of its own
+# because it needs godbus. Every command covers both.
+MODULES=". dbusx"
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+# The version, derived from the repository rather than stored in it, as
+# Portical, Tidewaiter and Treesinger derive theirs.
+#
+# Only the major is committed, in MAJOR, because only the major is a decision:
+# it moves when compatibility breaks, and for a Go module past 1 that also
+# means a /vN module path. The rest is a fact about the build, so recording it
+# in the tree would only create a number that can disagree with what was
+# tagged.
+#
+# Minor is the commit count, so it only ever goes up and names exactly one
+# commit. Patch is the CI run number, which separates two builds of the same
+# commit - a re-run, or a manual dispatch - and locally becomes a timestamp
+# instead, so a developer's version sorts after CI's and is obviously not one.
+version() {
+  # Counted from HEAD, not from a branch name: on Actions the checkout is
+  # detached, and HEAD is the commit being built either way.
+  if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+    die "this is a shallow clone, so the commit count is wrong and so is the version. In Actions, checkout with \`fetch-depth: 0\`."
+  fi
+  echo "$(cat MAJOR).$(git rev-list --count HEAD).${GITHUB_RUN_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
+}
+
+# The applications ship for 32-bit ARM too, where an int is 32 bits and a
+# kernel's cgroup ids hold a generation, so vet looks at those as well.
+check() {
+  for module in $MODULES; do
+    (
+      cd "$module" >/dev/null
+      unformatted=$(gofmt -l .)
+      [ -z "$unformatted" ] || die "not gofmt'd in $module: $unformatted"
+      go vet ./...
+      for arch in arm arm64 386; do GOARCH=$arch go vet ./...; done
+    )
+  done
+}
+
+# 386 runs the tests again on a 32-bit userland.
+test() {
+  for module in $MODULES; do
+    (
+      cd "$module" >/dev/null
+      go test -count=1 "$@" ./...
+      GOARCH=386 go test -count=1 "$@" ./...
+    )
+  done
+}
+
+command=${1:-}
+[ $# -gt 0 ] && shift
+case "$command" in
+  version) version ;;
+  check) check ;;
+  test) test "$@" ;;
+  *) die "usage: ./run <version|check|test>" ;;
+esac
