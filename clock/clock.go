@@ -2,6 +2,7 @@ package clock
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -124,4 +125,45 @@ func (c *Stopped) BlockUntil(ctx context.Context, n int) error {
 func (c *Stopped) notify() {
 	close(c.changed)
 	c.changed = make(chan struct{})
+}
+
+// Instant is a clock on which every wait is over as soon as it begins.
+//
+// After moves the clock on by d, records d, and releases at once. It is for
+// code whose waits a test asserts on rather than steps through - a retry's
+// backoff, a Retry-After honoured - where a Stopped clock would need a
+// goroutine to Advance it at each wait. Now moves on with each wait, so a
+// duration measured around one reads as the time it waited.
+type Instant struct {
+	mu    sync.Mutex
+	now   time.Time
+	waits []time.Duration
+}
+
+// NewInstant is an instant clock starting at start.
+func NewInstant(start time.Time) *Instant {
+	return &Instant{now: start}
+}
+
+func (c *Instant) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *Instant) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waits = append(c.waits, d)
+	c.now = c.now.Add(max(d, 0))
+	channel := make(chan time.Time, 1)
+	channel <- c.now
+	return channel
+}
+
+// Waits is every wait asked for, in order, as asked.
+func (c *Instant) Waits() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.waits)
 }

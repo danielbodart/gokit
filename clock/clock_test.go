@@ -3,6 +3,7 @@ package clock
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -73,5 +74,28 @@ func TestSleepGivesUpWhenTheContextIsDone(t *testing.T) {
 func TestAZeroWaitIsOverAtOnce(t *testing.T) {
 	if !released(NewStopped(start).After(0)) {
 		t.Error("not released")
+	}
+}
+
+func TestInstantReleasesEveryWaitAtOnceAndRecordsIt(t *testing.T) {
+	clock := NewInstant(start)
+	if err := Sleep(context.Background(), clock, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !released(clock.After(time.Second)) {
+		t.Fatal("not released")
+	}
+	if got := clock.Waits(); !slices.Equal(got, []time.Duration{time.Minute, time.Second}) {
+		t.Errorf("waits are %v", got)
+	}
+}
+
+// A duration measured around a wait reads as the time waited.
+func TestInstantMovesOnByEachWait(t *testing.T) {
+	clock := NewInstant(start)
+	clock.After(90 * time.Second)
+	clock.After(-time.Second)
+	if got := clock.Now(); !got.Equal(start.Add(90 * time.Second)) {
+		t.Errorf("now is %v", got)
 	}
 }

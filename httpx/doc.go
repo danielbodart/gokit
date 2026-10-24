@@ -8,6 +8,11 @@
 // to end, and it is why nothing above this line knows whether it is talking
 // over a unix socket or TCP.
 //
+// What a client does around every request is a Decorator over its
+// RoundTripper, applied in order by Decorate: Identifying names the client,
+// Retrying tries again what may pass - honouring a server's Retry-After, up
+// to a cap - and Logging says what each request came to.
+//
 // It is here rather than borrowed because the standard library stops just
 // short: http.RoundTripper has no func adapter, httptest.ResponseRecorder
 // links the testing packages into a production binary and records a stream

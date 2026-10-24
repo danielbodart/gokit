@@ -3,7 +3,9 @@
 // A daemon waits for its next pass, before retrying, before reopening a
 // stream that dropped. Each of those goes through a Clock, so a test holds
 // time still with a Stopped clock and moves it on with Advance, rather than
-// sleeping for real and hoping the timing works out.
+// sleeping for real and hoping the timing works out. Where a test only needs
+// to know how long something waited, an Instant clock releases every wait at
+// once and records it.
 //
 // It is here rather than borrowed because the standard library has no clock
 // to fake, and what a daemon needs of one - Now, After, and a test clock that
