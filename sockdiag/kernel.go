@@ -9,6 +9,9 @@ import (
 	"net/netip"
 	"path/filepath"
 	"syscall"
+	"time"
+
+	"github.com/danielbodart/gokit/internal/netlink"
 )
 
 // Kernel is the real machine's listening sockets, asked of the kernel
@@ -49,6 +52,10 @@ const (
 	inetDiagMsgLength = 72
 )
 
+// dumpTimeout bounds each receive of a dump that ctx does not: a kernel that
+// stopped answering part way must not stall the caller for ever.
+const dumpTimeout = 10 * time.Second
+
 type query struct {
 	protocol Protocol
 	family   uint8
@@ -66,21 +73,15 @@ var queries = []query{
 }
 
 func (k kernel) Listening(ctx context.Context) ([]Listener, error) {
-	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, netlinkSockDiag)
+	socket, err := netlink.Open(ctx, "sock_diag", netlinkSockDiag, dumpTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("opening sock_diag netlink socket: %w", err)
+		return nil, err
 	}
-	defer syscall.Close(fd)
-	if err := syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
-		return nil, fmt.Errorf("binding sock_diag netlink socket: %w", err)
-	}
+	defer socket.Close()
 
 	var listeners []Listener
 	for i, q := range queries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		found, err := dump(fd, uint32(i+1), q)
+		found, err := dump(ctx, socket, uint32(i+1), q)
 		if err != nil {
 			return nil, fmt.Errorf("listing %s sockets: %w", q.protocol, err)
 		}
@@ -130,65 +131,35 @@ func anyCgroup(listeners []Listener) bool {
 // request is an inet_diag_req_v2 dump request: every socket of one family and
 // protocol in one state, from anywhere to anywhere.
 func request(seq uint32, q query) []byte {
-	message := make([]byte, syscall.NLMSG_HDRLEN+56)
-	order := binary.NativeEndian
-	order.PutUint32(message[0:], uint32(len(message)))
-	order.PutUint16(message[4:], sockDiagByFamily)
-	order.PutUint16(message[6:], syscall.NLM_F_REQUEST|syscall.NLM_F_DUMP)
-	order.PutUint32(message[8:], seq)
-	body := message[syscall.NLMSG_HDRLEN:]
+	body := make([]byte, 56)
 	body[0] = q.family
 	body[1] = q.number
 	// idiag_ext asks only for the extensions numbered up to 8. The two read
 	// here, v6only and the cgroup id, come with every socket regardless.
-	order.PutUint32(body[4:], 1<<q.state)
-	return message
+	binary.NativeEndian.PutUint32(body[4:], 1<<q.state)
+	return netlink.Request(sockDiagByFamily, seq, body)
 }
 
-func dump(fd int, seq uint32, q query) ([]Listener, error) {
-	if err := syscall.Sendto(fd, request(seq, q), 0, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
+func dump(ctx context.Context, socket *netlink.Socket, seq uint32, q query) ([]Listener, error) {
+	if err := socket.Send(request(seq, q)); err != nil {
 		return nil, err
 	}
-
 	var listeners []Listener
-	buffer := make([]byte, 64*1024)
-	for {
-		n, _, err := syscall.Recvfrom(fd, buffer, 0)
+	err := netlink.Collect(ctx, socket.Receive, seq, func(message syscall.NetlinkMessage) error {
+		if message.Header.Type != sockDiagByFamily {
+			return nil
+		}
+		listener, err := parseDiag(message.Data, q.protocol)
 		if err != nil {
-			if errors.Is(err, syscall.EINTR) {
-				continue
-			}
-			return nil, err
+			return err
 		}
-		messages, err := syscall.ParseNetlinkMessage(buffer[:n])
-		if err != nil {
-			return nil, err
-		}
-		for _, message := range messages {
-			if message.Header.Seq != seq {
-				continue
-			}
-			switch message.Header.Type {
-			case syscall.NLMSG_DONE, syscall.NLMSG_ERROR:
-				// Both carry an errno, negated; DONE's is 0 unless the dump
-				// failed part way, and an ERROR of 0 is an acknowledgement.
-				if len(message.Data) >= 4 {
-					if errno := int32(binary.NativeEndian.Uint32(message.Data)); errno < 0 {
-						return nil, syscall.Errno(-errno)
-					}
-				}
-				if message.Header.Type == syscall.NLMSG_DONE {
-					return listeners, nil
-				}
-			case sockDiagByFamily:
-				listener, err := parseDiag(message.Data, q.protocol)
-				if err != nil {
-					return nil, err
-				}
-				listeners = append(listeners, listener)
-			}
-		}
+		listeners = append(listeners, listener)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return listeners, nil
 }
 
 // parseDiag reads one inet_diag_msg and the attributes after it.
@@ -213,24 +184,15 @@ func parseDiag(data []byte, protocol Protocol) (Listener, error) {
 		return Listener{}, fmt.Errorf("unexpected address family %d", data[0])
 	}
 
-	for attributes := data[inetDiagMsgLength:]; len(attributes) >= syscall.SizeofRtAttr; {
-		length := int(order.Uint16(attributes[0:2]))
-		kind := order.Uint16(attributes[2:4]) & 0x3fff // without NLA_F_NESTED and NLA_F_NET_BYTEORDER
-		if length < syscall.SizeofRtAttr || length > len(attributes) {
-			return Listener{}, fmt.Errorf("malformed inet_diag attribute")
-		}
-		payload := attributes[syscall.SizeofRtAttr:length]
-		switch {
-		case kind == inetDiagSkV6Only && len(payload) >= 1:
-			listener.V6Only = payload[0] != 0
-		case kind == inetDiagCgroupID && len(payload) >= 8:
-			listener.CgroupID = order.Uint64(payload)
-		}
-		aligned := (length + syscall.RTA_ALIGNTO - 1) &^ (syscall.RTA_ALIGNTO - 1)
-		if aligned >= len(attributes) {
-			break
-		}
-		attributes = attributes[aligned:]
+	attributes, err := netlink.Attributes(data[inetDiagMsgLength:])
+	if err != nil {
+		return Listener{}, err
+	}
+	if v6only := attributes[inetDiagSkV6Only]; len(v6only) >= 1 {
+		listener.V6Only = v6only[0] != 0
+	}
+	if id := attributes[inetDiagCgroupID]; len(id) >= 8 {
+		listener.CgroupID = order.Uint64(id)
 	}
 	return listener, nil
 }
