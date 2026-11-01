@@ -1,0 +1,101 @@
+# The weekly update: every dependency gokit has, moved in the one window a
+# week all of danielbodart's repos share, Sunday 21:23 UTC. nix-config
+# follows at 23:23 on the same nixos-26.05, so what the tools build that
+# week is what the machines run.
+#
+# What moves: mise.toml's tools, each to the latest patch of its pinned minor
+# (a minor moves by hand, with the go_1_NN the applications' flakes build
+# with), and each module's Go requirements (go get -u, go mod tidy). gokit has
+# no flake.
+#
+# The result is committed straight to main, as github-actions[bot], only if
+# `mise run check` -- everything CI runs -- passes with it; never a pull
+# request. A push with GITHUB_TOKEN starts no workflow, so if what moved is
+# something a release carries (RELEASE_PATHS in mise.toml: a requirement,
+# not just the toolchain pin) this starts CI on the pushed commit with
+# release=true, which tags it; otherwise nothing is released.
+name: Weekly update
+on:
+  schedule:
+    - cron: "23 21 * * 0"
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: update
+env:
+  # A requirement that wants a newer Go fails the gate, rather than Go
+  # fetching itself a toolchain mise.toml does not pin.
+  GOTOOLCHAIN: local
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      # The whole history and the tags: the release check compares with the
+      # last release tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v5
+
+      - name: Move mise's tools to the latest patch of their minor
+        run: |
+          mise ls --local --json | jq -r 'to_entries[] | .key + " " + .value[0].requested_version' |
+            while read -r tool pinned; do
+              [[ $pinned =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+              latest=$(mise latest "$tool@${pinned%.*}")
+              [ -n "$latest" ] && [ "$latest" != "$pinned" ] || continue
+              sed -i "s|^\(\"\{0,1\}$tool\"\{0,1\} *= *\)\"$pinned\"|\1\"$latest\"|" mise.toml
+              echo "$tool $pinned -> $latest" >> "$RUNNER_TEMP/moved"
+            done
+          mise install
+
+      - name: Move the Go requirements
+        run: |
+          reqs() { go mod edit -json | jq -r '.Require[]? | .Path + " " + .Version' | sort; }
+          for mod in $(git ls-files '*go.mod' | xargs -n1 dirname); do
+            (
+              cd "$mod"
+              before=$(reqs)
+              go get -u ./...
+              go mod tidy
+              comm -13 <(echo "$before") <(reqs) | cut -d' ' -f1 >> "$RUNNER_TEMP/moved"
+            )
+          done
+
+      - name: What moved
+        id: moved
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then echo "Nothing moved."; exit 0; fi
+          touch "$RUNNER_TEMP/moved"
+          moved=$(sort -u "$RUNNER_TEMP/moved" | paste -sd, - | sed 's/,/, /g')
+          echo "moved=${moved:-$(git status --porcelain | cut -c4- | paste -sd, - | sed 's/,/, /g')}" >> "$GITHUB_OUTPUT"
+
+      - name: mise run check
+        if: steps.moved.outputs.moved
+        run: mise run check
+
+      - name: Commit and push
+        if: steps.moved.outputs.moved
+        env:
+          MOVED: ${{ steps.moved.outputs.moved }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Weekly update: $MOVED"
+          git pull -q --rebase origin main
+          git push -q origin HEAD:main
+
+      - name: Release, if what moved is released
+        if: steps.moved.outputs.moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(mise run -q release-due)" = true ]; then
+            gh workflow run ci.yml --ref main -f release=true
+          else
+            echo "Nothing in RELEASE_PATHS moved: no release."
+          fi
