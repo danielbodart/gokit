@@ -116,16 +116,21 @@ mise run build   # every package of both modules
 
 ## Channels
 
-gokit is a Go library, so it has no channels of its own: no image, tarball
-or Nix package. It ships as Go module tags, which the applications take.
+- **Go module**: `go get github.com/danielbodart/gokit@v<version>` (and
+  `github.com/danielbodart/gokit/dbusx@v<version>`, tagged `dbusx/v<version>`
+  at the same commit). Built and tested with the Go `mise.toml` pins, at the
+  same minor as the `go_1_NN` the applications' flakes build with from
+  nixos-26.05.
+- Not shipped: Docker - a library; the applications that import it ship
+  images.
+- Not shipped: tarball + systemd - a library; the applications ship those.
+- Not shipped: Nix - a library has no package; each application's flake
+  vendors it.
 
-- **Built** by mise: `mise.toml` pins Go, at the same minor as the `go_1_NN`
-  the applications' flakes build with from nixos-26.05.
-- **Updated** weekly, Sunday 21:23 UTC (`.github/workflows/update.yml`): Go
-  to the latest patch of its minor, and each module's requirements, committed
-  to `main` once `mise run check` passes.
-- **Consumed** with `go get github.com/danielbodart/gokit@vX.Y.Z` (and
-  `.../dbusx`).
+Updated weekly (Sunday 21:23 UTC): Go to the latest patch of its minor, and
+each module's requirements, committed to `main` once `mise run check`
+passes. A release is cut when the Go source, a `go.mod` or `go.sum`, or
+`MAJOR` changed since the last release (`RELEASE_PATHS` in `mise.toml`).
 
 ## Versions
 

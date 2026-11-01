@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# bash, so GitHub runs every step with -eo pipefail: a command that fails on
+# the left of a pipe fails the step rather than handing on what it printed.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -51,8 +57,9 @@ jobs:
         env:
           FORCE: ${{ inputs.release }}
         run: |
-          if [ "$FORCE" = true ]; then due=true; else due=$(mise run -q release-due); fi
-          echo "release=$due" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" = true ] || mise run -q release-due; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
 
   # A release is the root module tagged v<version> and dbusx tagged
   # dbusx/v<version>, at the same commit, so an application takes both at the
@@ -99,7 +106,12 @@ jobs:
         run: |
           tag="v$VERSION"
           gh release view "$tag" >/dev/null 2>&1 || {
-            git log -1 --format=%B "$GITHUB_SHA" > notes.md
+            # The notes are the commits since the last release.
+            if prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_SHA^" 2>/dev/null); then
+              git log "$prev..$GITHUB_SHA" --pretty='- %s (%h)' > notes.md
+            else
+              git log -1 --pretty='- %s (%h)' "$GITHUB_SHA" > notes.md
+            fi
             gh release create "$tag" --verify-tag --title "$tag" --latest --notes-file notes.md
           }
 

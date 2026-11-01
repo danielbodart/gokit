@@ -24,6 +24,12 @@ permissions:
   actions: write
 concurrency:
   group: update
+
+# bash, so GitHub runs every step with -eo pipefail: a command that fails on
+# the left of a pipe fails the step rather than handing on what it printed.
+defaults:
+  run:
+    shell: bash
 env:
   # A requirement that wants a newer Go fails the gate, rather than Go
   # fetching itself a toolchain mise.toml does not pin.
@@ -94,8 +100,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$(mise run -q release-due)" = true ]; then
-            gh workflow run ci.yml --ref main -f release=true
-          else
-            echo "Nothing in RELEASE_PATHS moved: no release."
-          fi
+          if mise run release-due; then gh workflow run ci.yml --ref main -f release=true; fi
