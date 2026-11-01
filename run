@@ -1,6 +1,7 @@
 #!/bin/sh
 # The one place gokit's build is defined, so CI runs the same commands a
-# developer does: ./run <version|check|test>.
+# developer does: ./run <version|check|test|build>. mise.toml's tasks call it:
+# mise run check (both of check and test), mise run build.
 set -eu
 
 cd "$(dirname "$0")"
@@ -50,6 +51,12 @@ check() {
   done
 }
 
+build() {
+  for module in $MODULES; do
+    (cd "$module" >/dev/null && go build ./...)
+  done
+}
+
 # 386 runs the tests again on a 32-bit userland.
 test() {
   for module in $MODULES; do
@@ -67,5 +74,6 @@ case "$command" in
   version) version ;;
   check) check ;;
   test) test "$@" ;;
-  *) die "usage: ./run <version|check|test>" ;;
+  build) build ;;
+  *) die "usage: ./run <version|check|test|build>" ;;
 esac

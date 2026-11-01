@@ -109,16 +109,34 @@ go get github.com/danielbodart/gokit/dbusx
   which has no `/sys`, or a user without `CAP_NET_ADMIN`.
 
 ```sh
-./run check   # gofmt, and vet on amd64, arm, arm64 and 386, in both modules
-./run test    # the tests in both modules, natively and on 386
+mise run check   # gofmt, vet on amd64, arm, arm64 and 386, and the tests
+                 # natively and on 386, in both modules
+mise run build   # every package of both modules
 ```
+
+## Channels
+
+gokit is a Go library, so it has no channels of its own: no image, tarball
+or Nix package. It ships as Go module tags, which the applications take.
+
+- **Built** by mise: `mise.toml` pins Go, at the same minor as the `go_1_NN`
+  the applications' flakes build with from nixos-26.05.
+- **Updated** weekly, Sunday 21:23 UTC (`.github/workflows/update.yml`): Go
+  to the latest patch of its minor, and each module's requirements, committed
+  to `main` once `mise run check` passes.
+- **Consumed** with `go get github.com/danielbodart/gokit@vX.Y.Z` (and
+  `.../dbusx`).
 
 ## Versions
 
-Every green build of `main` is a release, tagged by CI: `vMAJOR.MINOR.PATCH`
-for the root module and `dbusx/vMAJOR.MINOR.PATCH` for dbusx, both at the
-same commit, so nothing is bumped by hand. It is the scheme Portical,
-Tidewaiter and Treesinger use:
+A green build of `main` is a release, tagged by CI, when what a release
+carries changed since the last one: the Go source, `go.mod`s and `go.sum`s,
+or `MAJOR` (`RELEASE_PATHS` in `mise.toml`). A change to the workflows, the
+README or the toolchain pin tags nothing; a run of CI started by hand with
+`release` tags it anyway. A release is `vMAJOR.MINOR.PATCH` for the root
+module and `dbusx/vMAJOR.MINOR.PATCH` for dbusx, both at the same commit, so
+nothing is bumped by hand. It is the scheme Portical, Tidewaiter and
+Treesinger use:
 
 - **MAJOR** is the one number committed, in `MAJOR`, because moving it is a
   decision: it says compatibility broke. Past 1, Go also wants the module path
