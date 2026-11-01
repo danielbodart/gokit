@@ -19,7 +19,7 @@ jobs:
 
       # mise.toml is the one place Go's version is pinned, for CI and for
       # anyone working on this locally.
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
 
       - name: Check
         run: ./run check
