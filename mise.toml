@@ -3,7 +3,7 @@
 # latest patch of its minor; a minor moves by hand, with the go_1_NN the
 # applications' flakes build with from nixos-26.05.
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 
 # What a release carries: the Go source and the modules' requirements. A
 # change to any of these since the last release tag is released (see
