@@ -117,12 +117,22 @@ jobs:
 
       # Asking the module proxy for each version fetches it now. The proxy
       # caches a "not found" for a while, so the first lookup must come after
-      # the tag exists, not from an application racing it.
+      # the tag exists, not from an application racing it. The proxy can lag
+      # a just-pushed tag, so each module gets 10 tries, 30 s apart.
       - name: Warm the module proxy
         env:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           for module in gokit gokit/dbusx; do
-            curl -fsS "https://proxy.golang.org/github.com/danielbodart/$module/@v/v$VERSION.info"
-            echo
+            url="https://proxy.golang.org/github.com/danielbodart/$module/@v/v$VERSION.info"
+            for attempt in $(seq 1 10); do
+              if curl -fsS "$url"; then
+                echo
+                continue 2
+              fi
+              echo "::warning::$module v$VERSION not on the proxy yet (try $attempt of 10)"
+              if [ "$attempt" -lt 10 ]; then sleep 30; fi
+            done
+            echo "::error::$module v$VERSION never reached the proxy"
+            exit 1
           done
